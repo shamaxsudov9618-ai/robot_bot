@@ -1,10 +1,10 @@
 import os
 import sys
 
+# --- Настройка sys.path, чтобы видеть config/, backend/ при запуске uvicorn bot.bot:app ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
-
 
 import requests
 import telebot  # pyTelegramBotAPI
@@ -16,18 +16,26 @@ from fastapi.responses import JSONResponse
 from config.settings import settings
 
 
+# --- Конфиг из settings.py (важно: там должны быть поля telegram_bot_token и backend_url) ---
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
-BACKEND_URL = settings.backend_url
+BACKEND_URL = settings.backend_url  # например: https://robot-backend-mdkp.onrender.com/ask
 
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env/переменных окружения")
 
+# Адрес для ORGINFO-запросов (ожидается, что backend даёт /orginfo_query)
+ORGINFO_URL = BACKEND_URL.replace("/ask", "/orginfo_query")
+
+# Инициализация Telegram-бота
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode=None)
 
-# FastAPI-приложение для Render
+# FastAPI-приложение для Render (webhook)
 app = FastAPI()
 
-# Режимы ответов по chat_id
+# Режимы работы по chat_id:
+# "normal"  – обычные ответы GPT
+# "short"   – короткие ответы GPT (1–2 предложения)
+# "orginfo" – пользователь вводит текст для поиска по orginfo.uz
 chat_modes: dict[int, str] = {}
 
 
@@ -43,11 +51,12 @@ def main_keyboard() -> types.ReplyKeyboardMarkup:
     """Кнопки под строкой ввода."""
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("Короткий режим", "Обычный режим")
+    kb.row("ORGINFO")
     return kb
 
 
 def ask_backend(question: str) -> str:
-    """Отправка запроса на backend /ask."""
+    """Отправка запроса на backend /ask (GPT)."""
     try:
         resp = requests.post(
             BACKEND_URL,
@@ -56,7 +65,7 @@ def ask_backend(question: str) -> str:
         )
         resp.raise_for_status()
         data = resp.json()
-        answer = data.get("answer", "").strip() or "Сервер вернул пустой ответ."
+        answer = (data.get("answer") or "").strip() or "Сервер вернул пустой ответ."
         return answer
     except requests.exceptions.ConnectionError:
         return "Не могу подключиться к серверу робота. Проверь backend."
@@ -65,6 +74,30 @@ def ask_backend(question: str) -> str:
     except Exception as e:
         print("Backend error:", e)
         return "Произошла ошибка при обращении к серверу робота."
+
+
+def ask_orginfo(query: str) -> str:
+    """Отправка запроса на backend /orginfo_query (поиск orginfo.uz)."""
+    if not ORGINFO_URL or "orginfo_query" not in ORGINFO_URL:
+        return "Режим ORGINFO пока не настроен на сервере."
+
+    try:
+        resp = requests.post(
+            ORGINFO_URL,
+            json={"query": query},
+            timeout=25,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        answer = (data.get("answer") or "").strip() or "Сервер orginfo вернул пустой ответ."
+        return answer
+    except requests.exceptions.ConnectionError:
+        return "Не могу подключиться к серверу orginfo. Проверь backend."
+    except requests.exceptions.Timeout:
+        return "Сервер orginfo слишком долго не отвечает."
+    except Exception as e:
+        print("Orginfo backend error:", e)
+        return "Произошла ошибка при обращении к серверу orginfo."
 
 
 # --------- Telegram handlers --------- #
@@ -78,9 +111,10 @@ def handle_start(message: telebot.types.Message):
         chat_id,
         "Привет! Я мозг настольного робота 🤖\n"
         "Пиши мне вопрос — я спрошу у ChatGPT.\n\n"
-        "Доступные режимы:\n"
+        "Режимы:\n"
         " • Короткий режим – 1–2 предложения\n"
-        " • Обычный режим – нормальные ответы\n",
+        " • Обычный режим – нормальные ответы\n"
+        " • ORGINFO – поиск и парсинг компаний с orginfo.uz\n",
         reply_markup=main_keyboard(),
     )
 
@@ -92,10 +126,11 @@ def handle_help(message: telebot.types.Message):
         "Команды:\n"
         " /start – начать\n"
         " /help – помощь\n"
-        " /ping – проверить backend\n"
+        " /ping – проверить backend\n\n"
         "Кнопки:\n"
-        " • Короткий режим\n"
-        " • Обычный режим\n",
+        " • Короткий режим – включить краткие ответы\n"
+        " • Обычный режим – вернуться к обычным ответам\n"
+        " • ORGINFO – поиск компании по ИНН/названию/ФИО и парсинг orginfo.uz\n",
     )
 
 
@@ -105,7 +140,6 @@ def handle_ping(message: telebot.types.Message):
     bot.send_chat_action(chat_id, "typing")
 
     try:
-        # /status на backend-е
         status_url = BACKEND_URL.replace("/ask", "/status")
         resp = requests.get(status_url, timeout=5)
         if resp.status_code == 200:
@@ -131,7 +165,7 @@ def handle_text(message: telebot.types.Message):
     mode = get_mode(chat_id)
     bot.send_chat_action(chat_id, "typing")
 
-    # переключение режимов
+    # --- Переключение режимов кнопками ---
     if text == "Короткий режим":
         set_mode(chat_id, "short")
         bot.send_message(
@@ -150,7 +184,28 @@ def handle_text(message: telebot.types.Message):
         )
         return
 
-    # обычное сообщение → отправляем на backend
+    if text == "ORGINFO":
+        set_mode(chat_id, "orginfo")
+        bot.send_message(
+            chat_id,
+            "Режим ORGINFO.\n"
+            "Отправьте текст: ИНН, название компании, ФИО директора или другую информацию.\n"
+            "Я постараюсь найти подходящие организации на orginfo.uz "
+            "и вернуть одну или несколько карточек.",
+            reply_markup=main_keyboard(),
+        )
+        return
+
+    # --- Обработка по текущему режиму ---
+    if mode == "orginfo":
+        # Одно сообщение обрабатываем в режиме ORGINFO.
+        # После этого можно сбросить режим обратно в normal
+        set_mode(chat_id, "normal")
+        answer = ask_orginfo(text)
+        bot.send_message(chat_id, answer, reply_markup=main_keyboard())
+        return
+
+    # Обычный GPT-режим (short/normal)
     if mode == "short":
         q = f"Ответь очень коротко (1–2 предложения): {text}"
     else:
@@ -160,7 +215,7 @@ def handle_text(message: telebot.types.Message):
     bot.send_message(chat_id, answer, reply_markup=main_keyboard())
 
 
-# --------- FastAPI endpoints --------- #
+# --------- FastAPI endpoints (для Render webhook) --------- #
 
 @app.get("/")
 async def root():

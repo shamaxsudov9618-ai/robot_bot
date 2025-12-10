@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from backend.gpt import ask_gpt
+from backend.gpt import ask_gpt, handle_orginfo_query  # 👈 добавили handle_orginfo_query
 
 app = FastAPI(title="Robot backend")
 
@@ -20,6 +20,14 @@ class AskRequest(BaseModel):
 
 
 class AskResponse(BaseModel):
+    answer: str
+
+
+class OrgInfoRequest(BaseModel):
+    query: str
+
+
+class OrgInfoResponse(BaseModel):
     answer: str
 
 
@@ -49,8 +57,31 @@ async def ask_endpoint(req: AskRequest):
         raise HTTPException(status_code=500, detail="OpenAI request failed")
 
 
+@app.post("/orginfo_query", response_model=OrgInfoResponse)
+async def orginfo_endpoint(req: OrgInfoRequest):
+    """
+    Эндпоинт для режима ORGINFO:
+    - принимает свободный текст (ИНН, название, ФИО и т.п.)
+    - внутри вызывает handle_orginfo_query из gpt.py
+    - возвращает одну или несколько карточек организаций
+    """
+    q = (req.query or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Empty query")
+
+    try:
+        answer = await handle_orginfo_query(q)
+        return OrgInfoResponse(answer=answer)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("Backend /orginfo_query error:", e)
+        raise HTTPException(status_code=500, detail="Orginfo request failed")
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    # Запуск через: python -m backend.main
+    # Локальный запуск:
+    # python -m backend.main
     uvicorn.run("backend.main:app", host="0.0.0.0", port=3000)

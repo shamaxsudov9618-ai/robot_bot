@@ -1,17 +1,19 @@
-from dataclasses import dataclass
-import os
-from dotenv import load_dotenv
+from pydantic import BaseSettings
+from typing import Optional
 
-# Загружаем .env из корня проекта
-load_dotenv()
+class Settings(BaseSettings):
+    openai_api_key: str
+    openai_model: str = "gpt-4o"
 
+    telegram_bot_token: str
+    backend_url: str
 
-@dataclass
-class Settings:
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    backend_url: str = os.getenv("BACKEND_URL", "http://localhost:3000/ask")
+    serpapi_key: Optional[str] = None  # ← вот это новое поле!
 
+    google_api_key: Optional[str] = None
+    google_cse_id: Optional[str] = None
+
+    class Config:
+        env_file = ".env"
 
 settings = Settings()

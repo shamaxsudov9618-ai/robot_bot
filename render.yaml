@@ -1,0 +1,30 @@
+services:
+  # === BACKEND (FastAPI + GPT + ORGINFO) ===
+  - type: web
+    name: robot-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o
+      - key: SERPAPI_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GOOGLE_CSE_ID
+        sync: false
+
+  # === TELEGRAM BOT (webhook) ===
+  - type: web
+    name: robot-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn bot.bot:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: BACKEND_URL
+        sync: false
