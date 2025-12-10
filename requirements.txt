@@ -1,7 +1,8 @@
 fastapi
 uvicorn
-python-dotenv
-openai>=1.0.0
-pyTelegramBotAPI
 requests
+openai>=1.0.0
+python-dotenv
+pyTelegramBotAPI
+pydantic
 beautifulsoup4
