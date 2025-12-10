@@ -1,16 +1,31 @@
+import os
+import sys
+
+# Добавляем родительскую папку в sys.path, чтобы видеть `config`, `backend` и т.д.
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
 import requests
 import telebot  # pyTelegramBotAPI
 from telebot import types
 
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
 from config.settings import settings
+
 
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
 BACKEND_URL = settings.backend_url
 
 if not TELEGRAM_BOT_TOKEN:
-    raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env")
+    raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env/переменных окружения")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode=None)
+
+# FastAPI-приложение для Render
+app = FastAPI()
 
 # Режимы ответов по chat_id
 chat_modes: dict[int, str] = {}
@@ -44,13 +59,15 @@ def ask_backend(question: str) -> str:
         answer = data.get("answer", "").strip() or "Сервер вернул пустой ответ."
         return answer
     except requests.exceptions.ConnectionError:
-        return "Не могу подключиться к серверу робота. Проверь, запущен ли backend."
+        return "Не могу подключиться к серверу робота. Проверь backend."
     except requests.exceptions.Timeout:
         return "Сервер робота слишком долго не отвечает."
     except Exception as e:
         print("Backend error:", e)
         return "Произошла ошибка при обращении к серверу робота."
 
+
+# --------- Telegram handlers --------- #
 
 @bot.message_handler(commands=["start"])
 def handle_start(message: telebot.types.Message):
@@ -88,6 +105,7 @@ def handle_ping(message: telebot.types.Message):
     bot.send_chat_action(chat_id, "typing")
 
     try:
+        # /status на backend-е
         status_url = BACKEND_URL.replace("/ask", "/status")
         resp = requests.get(status_url, timeout=5)
         if resp.status_code == 200:
@@ -132,7 +150,7 @@ def handle_text(message: telebot.types.Message):
         )
         return
 
-    # обработка обычных сообщений
+    # обычное сообщение → отправляем на backend
     if mode == "short":
         q = f"Ответь очень коротко (1–2 предложения): {text}"
     else:
@@ -142,6 +160,17 @@ def handle_text(message: telebot.types.Message):
     bot.send_message(chat_id, answer, reply_markup=main_keyboard())
 
 
-if __name__ == "__main__":
-    print("Telegram bot started. Press Ctrl+C to stop.")
-    bot.infinity_polling()
+# --------- FastAPI endpoints --------- #
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "telegram-bot"}
+
+
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    """Сюда Telegram будет слать апдейты."""
+    data = await request.json()
+    update = telebot.types.Update.de_json(data)
+    bot.process_new_updates([update])
+    return JSONResponse({"ok": True})
